@@ -1,0 +1,5 @@
+{
+  "name": "Veo AI Video Editor",
+  "description": "An AI-powered video editor that uses Gemini Veo to generate and extend videos from text and images.",
+  "requestFramePermissions": []
+}
