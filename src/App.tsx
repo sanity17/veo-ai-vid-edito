@@ -5,7 +5,8 @@
 
 import React, { useState, useRef } from 'react';
 import { generateVideo, extendVideo, checkAndSelectApiKey, analyzeVideoFrames } from './lib/gemini';
-import { Film, Image as ImageIcon, Wand2, Play, Pause, Plus, Loader2, Key, X, AlertCircle, Scissors, Upload, Sparkles, Video } from 'lucide-react';
+import { Film, Image as ImageIcon, Wand2, Play, Pause, Plus, Loader2, Key, X, AlertCircle, Scissors, Upload, Sparkles, Video, Download, Settings2 } from 'lucide-react';
+import { exportVideoClip, isFormatSupported, ExportFormat, ExportQuality } from './lib/exportVideo';
 
 const extractFrames = async (file: File): Promise<string[]> => {
   return new Promise((resolve, reject) => {
@@ -59,6 +60,13 @@ export default function App() {
   const [clips, setClips] = useState<any[]>([]);
   const [activeClip, setActiveClip] = useState<number | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
+
+  // Export State
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('webm');
+  const [exportQuality, setExportQuality] = useState<ExportQuality>('high');
 
   // Shared State
   const [isGenerating, setIsGenerating] = useState(false);
@@ -170,12 +178,57 @@ export default function App() {
     const current = videoRef.current.currentTime;
     setCurrentTime(current);
 
-    if (appMode === 'auto-edit' && activeClip !== null && clips[activeClip]) {
+    if (appMode === 'auto-edit' && activeClip !== null && clips[activeClip] && !isExporting) {
       const clip = clips[activeClip];
       if (current >= clip.end_time) {
         videoRef.current.currentTime = clip.start_time;
         videoRef.current.play();
       }
+    }
+  };
+
+  const handleExport = async () => {
+    if (!videoRef.current) return;
+    setIsExporting(true);
+    setExportProgress(0);
+    setError(null);
+    setShowExportModal(false);
+
+    let start = 0;
+    let end = videoRef.current.duration;
+    let sourceUrl = appMode === 'generate' ? videoUrl : uploadedVideoUrl;
+
+    if (appMode === 'auto-edit' && activeClip !== null && clips[activeClip]) {
+      start = clips[activeClip].start_time;
+      end = clips[activeClip].end_time;
+    }
+
+    if (!sourceUrl) {
+      setIsExporting(false);
+      return;
+    }
+
+    try {
+      const exportedUrl = await exportVideoClip(
+        sourceUrl,
+        start,
+        end,
+        { format: exportFormat, quality: exportQuality },
+        (prog) => setExportProgress(Math.round(prog))
+      );
+
+      const a = document.createElement('a');
+      a.href = exportedUrl;
+      a.download = `exported_clip_${Date.now()}.${exportFormat === 'mp4' ? 'mp4' : 'webm'}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || 'Failed to export video');
+    } finally {
+      setIsExporting(false);
+      setExportProgress(0);
     }
   };
 
@@ -398,7 +451,25 @@ export default function App() {
                 </div>
               )}
 
-              {currentVideoSrc && !isGenerating && (
+              {isExporting && (
+                <div className="absolute inset-0 bg-zinc-950/80 backdrop-blur-md flex flex-col items-center justify-center z-20">
+                  <div className="w-64 space-y-4">
+                    <div className="flex justify-between text-sm font-medium text-zinc-300">
+                      <span>Exporting Video...</span>
+                      <span>{exportProgress}%</span>
+                    </div>
+                    <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-indigo-500 transition-all duration-300 ease-out"
+                        style={{ width: `${exportProgress}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-zinc-500 text-center">Do not close this tab</p>
+                  </div>
+                </div>
+              )}
+
+              {currentVideoSrc && !isGenerating && !isExporting && (
                 <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-zinc-950/80 backdrop-blur-xl px-2 py-2 rounded-full border border-zinc-800/80 shadow-xl">
                   <button onClick={togglePlay} className="w-10 h-10 flex items-center justify-center rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-100 transition-colors cursor-pointer">
                     {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-1" />}
@@ -412,16 +483,28 @@ export default function App() {
           <div className="h-48 border-t border-zinc-800 bg-[#09090b] p-6 flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Timeline</h3>
-              {appMode === 'generate' && videoUrl && (
-                <button
-                  onClick={handleExtend}
-                  disabled={isGenerating}
-                  className="text-xs font-medium flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 px-3 py-1.5 rounded-md transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Extend (+7s)
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {appMode === 'generate' && videoUrl && (
+                  <button
+                    onClick={handleExtend}
+                    disabled={isGenerating || isExporting}
+                    className="text-xs font-medium flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 px-3 py-1.5 rounded-md transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Extend (+7s)
+                  </button>
+                )}
+                {((appMode === 'generate' && videoUrl) || (appMode === 'auto-edit' && activeClip !== null)) && (
+                  <button
+                    onClick={() => setShowExportModal(true)}
+                    disabled={isGenerating || isExporting}
+                    className="text-xs font-medium flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-500/50 px-4 py-1.5 rounded-md transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Export
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="flex-1 flex flex-col gap-2">
@@ -486,6 +569,90 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {/* Export Modal */}
+          {showExportModal && (
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl max-w-md w-full shadow-2xl overflow-hidden p-6 relative">
+                <button 
+                  onClick={() => setShowExportModal(false)}
+                  className="absolute top-4 right-4 text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+                
+                <h2 className="text-xl font-semibold text-zinc-100 flex items-center gap-2 mb-6">
+                  <Settings2 className="w-5 h-5 text-indigo-400" />
+                  Export Settings
+                </h2>
+
+                <div className="space-y-6">
+                  <div className="space-y-3">
+                    <label className="text-sm font-medium text-zinc-300 block">Format</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        onClick={() => setExportFormat('webm')}
+                        className={`py-3 px-4 rounded-lg border text-sm font-medium transition-colors ${exportFormat === 'webm' ? 'bg-indigo-500/10 border-indigo-500/50 text-indigo-300' : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:bg-zinc-800 cursor-pointer'}`}
+                      >
+                        WebM (VP9)
+                      </button>
+                      <button
+                        onClick={() => setExportFormat('mp4')}
+                        disabled={!isFormatSupported('mp4')}
+                        className={`py-3 px-4 rounded-lg border text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${exportFormat === 'mp4' ? 'bg-indigo-500/10 border-indigo-500/50 text-indigo-300' : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:bg-zinc-800 cursor-pointer'}`}
+                      >
+                        MP4 (H.264)
+                        {!isFormatSupported('mp4') && <span className="block text-[10px] text-zinc-500 font-normal mt-0.5">Not supported in browser</span>}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <label className="text-sm font-medium text-zinc-300 block">Quality</label>
+                    <div className="grid grid-cols-3 gap-3">
+                      <button
+                        onClick={() => setExportQuality('high')}
+                        className={`py-3 px-2 rounded-lg border text-sm font-medium transition-colors ${exportQuality === 'high' ? 'bg-indigo-500/10 border-indigo-500/50 text-indigo-300' : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:bg-zinc-800 cursor-pointer'}`}
+                      >
+                        High
+                        <span className="block text-[10px] text-zinc-500 font-normal mt-0.5">Original / 1080p</span>
+                      </button>
+                      <button
+                        onClick={() => setExportQuality('medium')}
+                        className={`py-3 px-2 rounded-lg border text-sm font-medium transition-colors ${exportQuality === 'medium' ? 'bg-indigo-500/10 border-indigo-500/50 text-indigo-300' : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:bg-zinc-800 cursor-pointer'}`}
+                      >
+                        Medium
+                        <span className="block text-[10px] text-zinc-500 font-normal mt-0.5">720p Max</span>
+                      </button>
+                      <button
+                        onClick={() => setExportQuality('low')}
+                        className={`py-3 px-2 rounded-lg border text-sm font-medium transition-colors ${exportQuality === 'low' ? 'bg-indigo-500/10 border-indigo-500/50 text-indigo-300' : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:bg-zinc-800 cursor-pointer'}`}
+                      >
+                        Low
+                        <span className="block text-[10px] text-zinc-500 font-normal mt-0.5">480p Max</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-8 pt-6 border-t border-zinc-800 flex justify-end gap-3">
+                  <button 
+                    onClick={() => setShowExportModal(false)}
+                    className="px-4 py-2 rounded-md text-sm font-medium text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={handleExport}
+                    className="px-6 py-2 rounded-md text-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors flex items-center gap-2 cursor-pointer shadow-lg shadow-indigo-500/20"
+                  >
+                    <Download className="w-4 h-4" />
+                    Start Export
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </main>
       </div>
     </div>
